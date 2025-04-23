@@ -1,95 +1,94 @@
 package main
 
 import (
-	"github.com/gin-gonic/gin"
+	"encoding/json"
+	"fmt"
 	"log"
-	"mymodule/xraycore"
-  "os"
+	"mymodule/xraycoreHelper"
+	"os"
+
+	"github.com/gin-gonic/gin"
 )
 
-var xray = &xraycore.XrayService{}
+var xray = &xraycoreHelper.XrayService{}
 
 func main() {
 	r := gin.Default()
 
 	// 启动接口
-	r.POST("/start", func(c *gin.Context) {
-		configJson := `{
-  "inbounds": [
-    {
-      "port": 443,
-      "listen": "127.0.0.1",
-      "protocol": "vmess",
-      "settings": {
-        "clients": [
-          {
-            "id": "5b7a1f37-02e6-4eab-8f52-7d8be39bece0",
-            "alterId": 64,
-            "security": "auto"
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "headers": {
-            "Host": "tunnel.honphiewon.eu.org"
-          }
-        },
-        "tlsSettings": {
-          "certificates": [
-            {
-              "certificateFile": "/usr/local/xray/cert.pem",
-              "keyFile": "/usr/local/xray/private.key"
-            }
-          ]
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "settings": {}
-    }
-  ],
-  "dns": {
-    "servers": [
-      "1.1.1.1",
-      "1.0.0.1",
-      "8.8.8.8",
-      "8.8.4.4"
-    ]
-  },
-  "log": {
-    "loglevel": "info",
-    "access": "/var/log/xray/access.log",
-    "error": "/var/log/xray/error.log"
-  }
-}
-`
-		err := xray.Start(configJson)
+	r.GET("/start", func(c *gin.Context) {
+		// 获取 Render 分配的端口
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "5703"
+		}
+		fmt.Println("Render 端口:", port)
+
+		// 动态读取并修改配置文件中的端口
+		configPath := "./config/test.json"
+		modifiedConfigPath := "./config/test_runtime.json"
+
+		err := patchXrayPort(configPath, modifiedConfigPath, port)
 		if err != nil {
+			fmt.Printf("配置修改失败: %+v\n", err)
+			c.JSON(500, gin.H{"error": "修改配置失败"})
+			return
+		}
+
+		// 启动 Xray
+		err = xray.StartFromFile(modifiedConfigPath)
+		if err != nil {
+			fmt.Printf("启动失败: %+v\n", err)
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
+
 		c.JSON(200, gin.H{"message": "Xray 启动成功"})
 	})
 
 	// 停止接口
-	r.POST("/stop", func(c *gin.Context) {
+	r.GET("/stop", func(c *gin.Context) {
 		xray.Stop()
 		c.JSON(200, gin.H{"message": "Xray 已停止"})
 	})
 
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "5703"
+	}
+	log.Println("Web 服务启动于 :" + port)
+	r.Run(":" + port)
+}
 
-  port := os.Getenv("PORT")
-  log.Println("端口分配信息：" + port)
-  if port == "" {
-    port = "5703"
-  }
-  log.Println("Web 服务启动于 :" + port)
-  r.Run(":" + port)
+// 修改配置文件中的端口
+func patchXrayPort(inputPath, outputPath, port string) error {
+	// 使用 os.ReadFile 替代 ioutil.ReadFile
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		return err
+	}
 
-	// r.Run(":80")
+	// 反序列化配置为 map
+	var config map[string]interface{}
+	err = json.Unmarshal(data, &config)
+	if err != nil {
+		return err
+	}
+
+	// 遍历 inbounds，替换端口
+	if inbounds, ok := config["inbounds"].([]interface{}); ok {
+		for _, inbound := range inbounds {
+			if ib, ok := inbound.(map[string]interface{}); ok {
+				ib["port"] = port // 修改端口
+			}
+		}
+	}
+
+	// 写入修改后的配置
+	newData, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	// 使用 os.WriteFile 替代 ioutil.WriteFile
+	return os.WriteFile(outputPath, newData, 0644)
 }
